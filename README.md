@@ -27,6 +27,28 @@
 - ✅ Tests with [Pytest](https://pytest.org).
 - 🏭 CI (continuous integration) and CD (continuous deployment) based on GitHub Actions.
 
+### Experimental RegScope PR Test Selection
+
+The optional `RegScope PR Selection` workflow builds a baseline test-to-function
+mapping on pushes to `master`, then runs change-selected backend tests on pull
+requests. The existing `Test Backend` full-suite workflow remains enabled and
+authoritative; a missing baseline mapping causes the RegScope job to skip. The
+selection workflow is an additional signal and does not claim CI time savings.
+
+To enable it, define these repository Actions variables and point them at a
+published, publicly readable RegScope revision. A tag or commit SHA makes the
+tool version reproducible; a branch name follows that branch's latest revision:
+
+- `REGSCOPE_REPOSITORY`: repository in `owner/name` form.
+- `REGSCOPE_REF`: branch, tag, or commit containing the mapping and provenance
+  CLI support.
+
+Mappings are reused only for the exact pull-request base commit and matching
+Python/dependency configuration. RegScope's provenance checks fall back to all
+discovered tests if the mapping no longer matches the checkout. If either
+repository variable is missing, the optional selection jobs are skipped; the
+full backend test workflow still runs.
+
 ### Dashboard Login
 
 ![Dashboard login screenshot](img/login.png)
