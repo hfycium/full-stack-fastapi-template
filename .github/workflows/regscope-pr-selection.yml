@@ -46,6 +46,8 @@ jobs:
           persist-credentials: false
       - name: Install RegScope
         run: python -m pip install --no-deps -e .regscope-tool
+      - name: Prepare frontend directory for pytest
+        run: mkdir -p backend/app/frontend
       - name: Collect baseline mapping
         env:
           BACKEND_PYTHON: ${{ steps.backend-python.outputs.path }}
@@ -117,6 +119,9 @@ jobs:
       - name: Install RegScope
         if: steps.mapping.outputs.cache-hit == 'true'
         run: python -m pip install --no-deps -e .regscope-tool
+      - name: Prepare frontend directory for pytest
+        if: steps.mapping.outputs.cache-hit == 'true'
+        run: mkdir -p backend/app/frontend
       - name: Run selected tests (or all tests if provenance is stale)
         id: run-selection
         if: steps.mapping.outputs.cache-hit == 'true'
