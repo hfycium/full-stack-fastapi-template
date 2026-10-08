@@ -47,9 +47,11 @@ jobs:
       - name: Install RegScope
         run: python -m pip install --no-deps -e .regscope-tool
       - name: Collect baseline mapping
+        env:
+          BACKEND_PYTHON: ${{ steps.backend-python.outputs.path }}
         run: >-
           regscope collect "$GITHUB_WORKSPACE/backend"
-          --python "${{ steps.backend-python.outputs.path }}"
+          --python "$BACKEND_PYTHON"
           --output "$GITHUB_WORKSPACE/.regscope-cache/coverage-mapping.json"
       - name: Cache baseline mapping
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -118,11 +120,15 @@ jobs:
       - name: Run selected tests (or all tests if provenance is stale)
         id: run-selection
         if: steps.mapping.outputs.cache-hit == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BACKEND_PYTHON: ${{ steps.backend-python.outputs.path }}
         run: >-
           regscope run "$GITHUB_WORKSPACE/backend"
-          "${{ github.event.pull_request.base.sha }}"
-          "${{ github.event.pull_request.head.sha }}"
-          --python "${{ steps.backend-python.outputs.path }}"
+          "$BASE_SHA"
+          "$HEAD_SHA"
+          --python "$BACKEND_PYTHON"
           --mapping "$GITHUB_WORKSPACE/.regscope-cache/coverage-mapping.json"
           --selected-only
           --output "$GITHUB_WORKSPACE/regscope-results"
