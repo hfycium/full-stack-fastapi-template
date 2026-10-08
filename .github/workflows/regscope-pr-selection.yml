@@ -1,0 +1,158 @@
+name: RegScope PR Selection
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-baseline-mapping:
+    if: github.event_name == 'push' && vars.REGSCOPE_REPOSITORY != '' && vars.REGSCOPE_REF != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "latest-known"
+      - name: Start test services
+        run: docker compose up -d --wait db mailpit
+      - name: Install backend environment and migrate database
+        run: uv run bash scripts/prestart.sh
+        working-directory: backend
+      - name: Locate backend Python
+        id: backend-python
+        run: echo "path=$(uv run python -c 'import sys; print(sys.executable)')" >> "$GITHUB_OUTPUT"
+        working-directory: backend
+      - name: Checkout RegScope
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.REGSCOPE_REPOSITORY }}
+          ref: ${{ vars.REGSCOPE_REF }}
+          path: .regscope-tool
+          persist-credentials: false
+      - name: Install RegScope
+        run: python -m pip install --no-deps -e .regscope-tool
+      - name: Collect baseline mapping
+        run: >-
+          regscope collect "$GITHUB_WORKSPACE/backend"
+          --python "${{ steps.backend-python.outputs.path }}"
+          --output "$GITHUB_WORKSPACE/.regscope-cache/coverage-mapping.json"
+      - name: Cache baseline mapping
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .regscope-cache/coverage-mapping.json
+          key: regscope-${{ github.sha }}-${{ hashFiles('.python-version', 'backend/pyproject.toml', 'uv.lock') }}
+      - name: Stop test services
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  select-pr-tests:
+    if: github.event_name == 'pull_request' && vars.REGSCOPE_REPOSITORY != '' && vars.REGSCOPE_REF != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore mapping for exact PR base
+        id: mapping
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .regscope-cache/coverage-mapping.json
+          key: regscope-${{ github.event.pull_request.base.sha }}-${{ hashFiles('.python-version', 'backend/pyproject.toml', 'uv.lock') }}
+      - name: Explain safe skip when no baseline exists
+        if: steps.mapping.outputs.cache-hit != 'true'
+        run: |
+          message="No mapping exists for this exact PR base and dependency configuration. RegScope selection was skipped; Test Backend still runs the full suite."
+          echo "$message"
+          printf '### RegScope PR selection\n\n%s\n' "$message" >> "$GITHUB_STEP_SUMMARY"
+      - name: Set up Python
+        if: steps.mapping.outputs.cache-hit == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+      - name: Install uv
+        if: steps.mapping.outputs.cache-hit == 'true'
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "latest-known"
+      - name: Start test services
+        if: steps.mapping.outputs.cache-hit == 'true'
+        run: docker compose up -d --wait db mailpit
+      - name: Install backend environment and migrate database
+        if: steps.mapping.outputs.cache-hit == 'true'
+        run: uv run bash scripts/prestart.sh
+        working-directory: backend
+      - name: Locate backend Python
+        if: steps.mapping.outputs.cache-hit == 'true'
+        id: backend-python
+        run: echo "path=$(uv run python -c 'import sys; print(sys.executable)')" >> "$GITHUB_OUTPUT"
+        working-directory: backend
+      - name: Checkout RegScope
+        if: steps.mapping.outputs.cache-hit == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.REGSCOPE_REPOSITORY }}
+          ref: ${{ vars.REGSCOPE_REF }}
+          path: .regscope-tool
+          persist-credentials: false
+      - name: Install RegScope
+        if: steps.mapping.outputs.cache-hit == 'true'
+        run: python -m pip install --no-deps -e .regscope-tool
+      - name: Run selected tests (or all tests if provenance is stale)
+        id: run-selection
+        if: steps.mapping.outputs.cache-hit == 'true'
+        run: >-
+          regscope run "$GITHUB_WORKSPACE/backend"
+          "${{ github.event.pull_request.base.sha }}"
+          "${{ github.event.pull_request.head.sha }}"
+          --python "${{ steps.backend-python.outputs.path }}"
+          --mapping "$GITHUB_WORKSPACE/.regscope-cache/coverage-mapping.json"
+          --selected-only
+          --output "$GITHUB_WORKSPACE/regscope-results"
+      - name: Summarize selection results
+        if: always() && (steps.run-selection.outcome == 'success' || steps.run-selection.outcome == 'failure')
+        env:
+          RESULTS_DIR: ${{ github.workspace }}/regscope-results
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          results = Path(os.environ["RESULTS_DIR"])
+          selection = json.loads((results / "selection.json").read_text(encoding="utf-8"))
+          evaluation = json.loads((results / "evaluation.json").read_text(encoding="utf-8"))
+          run = evaluation["selected_run"]
+          lines = [
+              "### RegScope PR selection",
+              "",
+              f"- Strategy: `{selection['strategy']}`",
+              f"- Tests selected: {evaluation['selected_tests']} / {evaluation['total_tests']}",
+              f"- Test-count reduction: {evaluation['reduction_ratio']:.2%}",
+              f"- Selection fallback: {evaluation['selection_fallback']}",
+              f"- Selected test run: exit code {run['exit_code']}, {run['elapsed_seconds']:.2f}s",
+              "- Full-suite result: see the independent `Test Backend` workflow.",
+          ]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          PY
+      - name: Stop test services
+        if: always() && steps.mapping.outputs.cache-hit == 'true'
+        run: docker compose down -v --remove-orphans
